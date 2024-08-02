@@ -1,6 +1,10 @@
-For Serial monitor:
-- Tools -> Manage Libraries
-  - Search for Adafruit TinyUSB
+Libraries:
+- Tools -> Manage Libraries 
+  - Adafruit TinyUSB
+    -  Might be included inside the Seeeduino package
+  - Sensirion I2C SHT4x (with Sensirion Core dependency)
+    - Might be included inside the Seeeduino package
+
 
 For T/H and 3-axis accelerometer:
 

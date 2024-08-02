@@ -8,6 +8,8 @@ Libraries:
 
 For T/H and 3-axis accelerometer:
 
+Set baud rate to 115200 in the serial monitor
+
 Add Seed studio board manager
 - Files -> Preferences (Mac: Arduino IDE -> Settings)
   - `https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json`

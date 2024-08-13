@@ -18,5 +18,6 @@ Download and select board type under board manager
 - Seed nRF52 Boards
   - Seed Wio Tracker 1110
 
+Make sure to update firmware for the board found here: https://wiki.seeedstudio.com/Get_Started_with_Wio-Trakcer_1110/#flash-firmware
 
 ** NOTE: Script for GNSS is still a work in progress and currently states no signal is found.

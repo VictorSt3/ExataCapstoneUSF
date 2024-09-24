@@ -4,22 +4,16 @@
 // Initialize the TinyGPSPlus object
 TinyGPSPlus gps;
 
-// Set your time zone offset from UTC in hours
-// For example, for Eastern Daylight Time (UTC-4), set timeZoneOffset = -4;
-// For Eastern Standard Time (UTC-5), set timeZoneOffset = -5;
-int timeZoneOffset = -4;  // Adjust this value as needed
-
 void setup() 
 {
     delay(100); // Wait for power on grove 
 
     // Initializes the debug output  
     Serial.begin(115200);
-    while (!Serial) delay(100); // Wait for ready
+    while (!Serial) delay(100); // Wait for it to be ready
 
-    // Initialize the GPS hardware serial port (using P0.24 RX and P0.25 TX)
-    Serial1.begin(9600);  // Assuming GPS communicates at 9600 baud
-    delay(1000);          // Give GPS module time to initialize
+    Serial1.begin(9600);  // GPS communicates at 9600 baud
+    delay(1000);          // Delay to initialize
 
     Serial.println("GPS Hardware Serial initialized...");
 }
@@ -48,66 +42,25 @@ void displayInfo()
 
     // Print date and time data
     if (gps.date.isValid() && gps.time.isValid()) {
-        // Adjust time for time zone
-        int year = gps.date.year();
-        int month = gps.date.month();
-        int day = gps.date.day();
-        int hour = gps.time.hour();
-        int minute = gps.time.minute();
-        int second = gps.time.second();
-
-        // Adjust hour for time zone
-        hour += timeZoneOffset;
-
-        // Handle day and date changes due to time zone offset
-        if (hour >= 24) {
-            hour -= 24;
-            day += 1;
-
-            // Adjust for month and year change
-            if ((month == 2 && day > daysInMonth(month, year)) ||
-                (day > daysInMonth(month, year))) {
-                day = 1;
-                month += 1;
-                if (month > 12) {
-                    month = 1;
-                    year += 1;
-                }
-            }
-        } else if (hour < 0) {
-            hour += 24;
-            day -= 1;
-
-            // Adjust for month and year change
-            if (day < 1) {
-                month -= 1;
-                if (month < 1) {
-                    month = 12;
-                    year -= 1;
-                }
-                day = daysInMonth(month, year);
-            }
-        }
-
         Serial.print("Date: ");
-        if (day < 10) Serial.print('0');
-        Serial.print(day);
+        if (gps.date.day() < 10) Serial.print('0');
+        Serial.print(gps.date.day());
         Serial.print("/");
-        if (month < 10) Serial.print('0');
-        Serial.print(month);
+        if (gps.date.month() < 10) Serial.print('0');
+        Serial.print(gps.date.month());
         Serial.print("/");
-        Serial.print(year);
+        Serial.print(gps.date.year());
 
         Serial.print("  Time: ");
-        if (hour < 10) Serial.print('0');
-        Serial.print(hour);
+        if (gps.time.hour() < 10) Serial.print('0');
+        Serial.print(gps.time.hour());
         Serial.print(":");
-        if (minute < 10) Serial.print('0');
-        Serial.print(minute);
+        if (gps.time.minute() < 10) Serial.print('0');
+        Serial.print(gps.time.minute());
         Serial.print(":");
-        if (second < 10) Serial.print('0');
-        Serial.print(second);
-        Serial.println(" Local Time");
+        if (gps.time.second() < 10) Serial.print('0');
+        Serial.print(gps.time.second());
+        Serial.println(" UTC");
     } else {
         Serial.println("Date/Time: INVALID");
     }
@@ -149,33 +102,5 @@ void displayInfo()
         Serial.println(gps.satellites.value());
     } else {
         Serial.println("Satellites: INVALID");
-    }
-}
-
-// Function to get the number of days in a month accounting for leap years
-int daysInMonth(int month, int year) {
-    if (month == 2) { // February
-        if (isLeapYear(year)) {
-            return 29;
-        } else {
-            return 28;
-        }
-    } else if (month == 4 || month == 6 || month == 9 || month == 11) {
-        return 30;
-    } else {
-        return 31;
-    }
-}
-
-// Function to check if a year is a leap year
-bool isLeapYear(int year) {
-    if (year % 4 != 0) {
-        return false;
-    } else if (year % 100 != 0) {
-        return true;
-    } else if (year % 400 != 0) {
-        return false;
-    } else {
-        return true;
     }
 }

@@ -1,0 +1,73 @@
+#include <TinyGPSPlus.h>
+#include <Adafruit_TinyUSB.h> // For Serial
+
+// Initialize the TinyGPSPlus object
+TinyGPSPlus gps;
+
+void setup() 
+{
+    delay(100); // Wait for power on grove 
+
+    // Initializes the debug output  
+    Serial.begin(115200);
+    while (!Serial) delay(100); // Wait for ready
+
+    // Initialize the GPS hardware serial port (using P0.24 RX and P0.25 TX)
+    Serial1.begin(9600);  // Assuming GPS communicates at 9600 baud
+    delay(1000);          // Give GPS module time to initialize
+
+    Serial.println("GPS Hardware Serial initialized...");
+}
+
+void loop() 
+{
+    // Continuously read from the GPS module
+    while (Serial1.available() > 0) {
+        char c = Serial1.read();  // Read character from GPS
+        Serial.print(c);          // Print raw GPS data to Serial Monitor
+
+        // Feed the character to TinyGPSPlus for parsing
+        if (gps.encode(c)) {
+            displayInfo();  // Display parsed GPS data when available
+        }
+    }
+
+    delay(500);  // Delay to slow down loop
+}
+
+void displayInfo()
+{
+    // Print location data
+    Serial.print("Location: ");
+    if (gps.location.isValid()) {
+        Serial.print("Lat: ");
+        Serial.print(gps.location.lat(), 6);
+        Serial.print(", Lon: ");
+        Serial.print(gps.location.lng(), 6);
+    } else {
+        Serial.print("Location: INVALID");
+    }
+
+    // Print date and time data
+    Serial.print("  Date/Time: ");
+    if (gps.date.isValid() && gps.time.isValid()) {
+        Serial.print(gps.date.month());
+        Serial.print("/");
+        Serial.print(gps.date.day());
+        Serial.print("/");
+        Serial.print(gps.date.year());
+        Serial.print(" ");
+        if (gps.time.hour() < 10) Serial.print('0');
+        Serial.print(gps.time.hour());
+        Serial.print(":");
+        if (gps.time.minute() < 10) Serial.print('0');
+        Serial.print(gps.time.minute());
+        Serial.print(":");
+        if (gps.time.second() < 10) Serial.print('0');
+        Serial.print(gps.time.second());
+    } else {
+        Serial.print("INVALID");
+    }
+
+    Serial.println();  // Newline for readability
+}

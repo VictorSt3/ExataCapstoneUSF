@@ -1,0 +1,129 @@
+// This script is the same as GPS
+
+#include <TinyGPSPlus.h>
+#include <SimpleKalmanFilter.h>
+#include <Adafruit_TinyUSB.h> // For Serial
+
+// Initialize the TinyGPSPlus object
+TinyGPSPlus gps;
+
+// Initialize Kalman Filters for Latitude and Longitude
+// Parameters: (e_mea, e_est, q)
+SimpleKalmanFilter kalmanFilterLat(1, 1, 0.01);
+SimpleKalmanFilter kalmanFilterLng(1, 1, 0.01);
+
+void setup() 
+{
+    delay(100); // Wait for power on grove 
+
+    // Initializes the debug output  
+    Serial.begin(115200);
+    while (!Serial) delay(100); // Wait for ready
+
+    // Initialize the GPS hardware serial port (using P0.24 RX and P0.25 TX)
+    Serial1.begin(9600);  // Assuming GPS communicates at 9600 baud
+    delay(1000);          // Give GPS module time to initialize
+
+    Serial.println("GPS Hardware Serial initialized...");
+}
+
+void loop() 
+{
+    // Read data from GPS module
+    while (Serial1.available() > 0) {
+        char c = Serial1.read();  // Read character from GPS
+
+        // Feed the character to TinyGPSPlus for parsing
+        gps.encode(c);
+    }
+
+    // Display GPS info every second if new data is available
+    static unsigned long lastDisplay = 0;
+    if (millis() - lastDisplay > 1000) {
+        lastDisplay = millis();
+        displayInfo();
+    }
+}
+
+void displayInfo()
+{
+    Serial.println("=====================================");
+
+    // Print date and time data
+    if (gps.date.isValid() && gps.time.isValid()) {
+        Serial.print("Date: ");
+        if (gps.date.day() < 10) Serial.print('0');
+        Serial.print(gps.date.day());
+        Serial.print("/");
+        if (gps.date.month() < 10) Serial.print('0');
+        Serial.print(gps.date.month());
+        Serial.print("/");
+        Serial.print(gps.date.year());
+
+        Serial.print("  Time: ");
+        if (gps.time.hour() < 10) Serial.print('0');
+        Serial.print(gps.time.hour());
+        Serial.print(":");
+        if (gps.time.minute() < 10) Serial.print('0');
+        Serial.print(gps.time.minute());
+        Serial.print(":");
+        if (gps.time.second() < 10) Serial.print('0');
+        Serial.print(gps.time.second());
+        Serial.println(" UTC");
+    } else {
+        Serial.println("Date/Time: INVALID");
+    }
+
+    // Print location data with Kalman filtering
+    if (gps.location.isValid()) {
+        double rawLat = gps.location.lat();
+        double rawLng = gps.location.lng();
+
+        double filteredLat = kalmanFilterLat.updateEstimate(rawLat);
+        double filteredLng = kalmanFilterLng.updateEstimate(rawLng);
+
+        Serial.print("Filtered Latitude: ");
+        Serial.print(filteredLat, 6);
+        Serial.println("°");
+
+        Serial.print("Filtered Longitude: ");
+        Serial.print(filteredLng, 6);
+        Serial.println("°");
+    } else {
+        Serial.println("Location: INVALID");
+    }
+
+    // Print altitude if available
+    if (gps.altitude.isValid()) {
+        Serial.print("Altitude: ");
+        Serial.print(gps.altitude.meters(), 2);
+        Serial.println(" meters");
+    } else {
+        Serial.println("Altitude: INVALID");
+    }
+
+    // Print speed if available
+    if (gps.speed.isValid()) {
+        Serial.print("Speed: ");
+        Serial.print(gps.speed.kmph(), 2);
+        Serial.println(" km/h");
+    } else {
+        Serial.println("Speed: INVALID");
+    }
+
+    // Print number of satellites
+    if (gps.satellites.isValid()) {
+        Serial.print("Satellites: ");
+        Serial.println(gps.satellites.value());
+    } else {
+        Serial.println("Satellites: INVALID");
+    }
+
+    // Print HDOP (Horizontal Dilution of Precision)
+    if (gps.hdop.isValid()) {
+        Serial.print("HDOP: ");
+        Serial.println(gps.hdop.hdop());
+    } else {
+        Serial.println("HDOP: INVALID");
+    }
+}

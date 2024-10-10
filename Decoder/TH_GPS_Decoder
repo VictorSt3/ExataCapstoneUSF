@@ -1,0 +1,46 @@
+function Decoder(b, port) {
+  var temperature = ((b[0] << 8) | b[1]);
+  if (temperature >= 0x8000) temperature -= 0x10000;
+  temperature /= 100;
+
+  var humidity = ((b[2] << 8) | b[3]);
+  if (humidity >= 0x8000) humidity -= 0x10000;
+  humidity /= 100;
+
+  var lat = (b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7];
+  if (lat >= 0x80000000) lat -= 0x100000000;
+  var latitude = lat / 1e6;
+
+  var lon = (b[8] << 24) | (b[9] << 16) | (b[10] << 8) | b[11];
+  if (lon >= 0x80000000) lon -= 0x100000000;
+  var longitude = lon / 1e6;
+
+  var speed = ((b[12] << 8) | b[13]);
+  if (speed >= 0x8000) speed -= 0x10000;
+  speed /= 100; // Convert back to km/h
+
+  var altitude = ((b[14] << 8) | b[15]);
+  if (altitude >= 0x8000) altitude -= 0x10000;
+  altitude /= 100; // Convert back to meters
+
+  var satellites = b[16];
+
+  // Check for invalid GPS data
+  if (b[4] == 0xFF && b[5] == 0xFF && b[6] == 0xFF && b[7] == 0xFF) {
+    latitude = null;
+    longitude = null;
+    speed = null;
+    altitude = null;
+    satellites = null;
+  }
+
+  return {
+    temperature: temperature,
+    humidity: humidity,
+    latitude: latitude,
+    longitude: longitude,
+    speed: speed,
+    altitude: altitude,
+    satellites: satellites
+  };
+}

@@ -7,423 +7,255 @@
 
  */
 
-// Includes
-#include <Arduino.h>
+#include <TinyGPSPlus.h>
+#include <Adafruit_TinyUSB.h> // For Serial
 #include <Wire.h>
+#include <LIS3DHTR.h>
 #include <SensirionI2CSht4x.h>
 #include <LbmWm1110.hpp>
 #include <Lbmx.hpp>
-#include <TinyGPSPlus.h>
-#include <Adafruit_TinyUSB.h> // For Serial
-#include <LIS3DHTR.h>         // For accelerometer
 
-#define WIRE Wire
+// Initialize modules
+TinyGPSPlus gps;
+LIS3DHTR<TwoWire> LIS; // I2C Accelerometer
+SensirionI2CSht4x sht4x;  // SHT41 Temperature & Humidity Sensor
 
-// Constants
+// Shock threshold in g
+const float SHOCK_THRESHOLD = 2.0; 
+uint16_t shockCounter = 0;
 
-// Custom Region: USA
+// LoRaWAN and network credentials
+static LbmWm1110& lbmWm1110 = LbmWm1110::getInstance();
 static constexpr smtc_modem_region_t REGION = SMTC_MODEM_REGION_US_915;
-
-// Device-specific EUIs and Key
 static const uint8_t DEV_EUI[8]  = { 0x2C, 0xF7, 0xF1, 0xF0, 0x54, 0x70, 0x00, 0x47 };
 static const uint8_t JOIN_EUI[8] = { 0x36, 0xB8, 0x07, 0x24, 0x6E, 0xD4, 0x85, 0x85 };
-static const uint8_t APP_KEY[16] = {
-    0xDF, 0x54, 0xC9, 0x75, 0x73, 0xC0, 0xE3, 0xB4,
-    0xBC, 0x2D, 0x25, 0x75, 0x71, 0x8B, 0xE9, 0x8A
+static const uint8_t APP_KEY[16] = { 
+    0xDF, 0x54, 0xC9, 0x75, 0x73, 0xC0, 0xE3, 0xB4, 
+    0xBC, 0x2D, 0x25, 0x75, 0x71, 0x8B, 0xE9, 0x8A 
 };
 
+// Uplink scheduling parameters
 static constexpr uint32_t FIRST_UPLINK_DELAY = 60;  // [sec.]
 static constexpr uint32_t UPLINK_PERIOD = 30;       // [sec.]
 static constexpr uint8_t UPLINK_FPORT = 3;
 
-const float SHOCK_THRESHOLD = 2.0; // Shock threshold in g
+// Execution period for loop
+static constexpr uint32_t EXECUTION_PERIOD = 50;    // [msec.]
 
-LIS3DHTR<TwoWire> LIS; // IIC
+enum class StateType { Startup, Joining, Joined, Failed };
+StateType state = StateType::Startup;
 
-// Variables
-
-static LbmWm1110& lbmWm1110 = LbmWm1110::getInstance();
-
-SensirionI2CSht4x sht4x;  // SHT41 sensor instance
-
-// Initialize the TinyGPSPlus object
-TinyGPSPlus gps;
-
-unsigned long lastDisplayTime = 0;
-
-// Shock counter
-volatile uint32_t shockCounter = 0;
-
-// Modem Event Handlers
-
+// Custom event handlers for LoRaWAN modem events
 class MyLbmxEventHandlers : public LbmxEventHandlers
 {
 protected:
-    void reset(const LbmxEvent& event) override;
-    void joined(const LbmxEvent& event) override;
-    void joinFail(const LbmxEvent& event) override;
-    void alarm(const LbmxEvent& event) override;
-};
+    // Handle modem reset event
+    void reset(const LbmxEvent& event) override {
+        if (LbmxEngine::setRegion(REGION) != SMTC_MODEM_RC_OK) abort();
+        if (LbmxEngine::setOTAA(DEV_EUI, JOIN_EUI, APP_KEY) != SMTC_MODEM_RC_OK) abort();
 
-void MyLbmxEventHandlers::reset(const LbmxEvent& event)
-{
-    if (LbmxEngine::setRegion(REGION) != SMTC_MODEM_RC_OK) abort();
-    if (LbmxEngine::setOTAA(DEV_EUI, JOIN_EUI, APP_KEY) != SMTC_MODEM_RC_OK) abort();
+        Serial.println("Attempting to join the LoRaWAN network...");
+        if (LbmxEngine::joinNetwork() != SMTC_MODEM_RC_OK) abort();
 
-    Serial.println("Join the LoRaWAN network.");
-    if (LbmxEngine::joinNetwork() != SMTC_MODEM_RC_OK) abort();
-}
-
-void MyLbmxEventHandlers::joined(const LbmxEvent& event)
-{
-    Serial.println("Start the alarm event.");
-    if (LbmxEngine::startAlarm(FIRST_UPLINK_DELAY) != SMTC_MODEM_RC_OK) abort();
-}
-
-void MyLbmxEventHandlers::joinFail(const LbmxEvent& event)
-{
-    Serial.println("Failed to join the network.");
-}
-
-void MyLbmxEventHandlers::alarm(const LbmxEvent& event)
-{
-    Serial.println("Send the uplink message.");
-
-    // Read temperature and humidity from the SHT41 sensor
-    float temperature, humidity;
-    uint16_t error = sht4x.measureHighPrecision(temperature, humidity);
-    if (error)
-    {
-        Serial.print("Error reading from SHT41 sensor: ");
-        Serial.println(error);
-        return;
+        state = StateType::Joining;
     }
 
-    // Prepare the payload
-    uint8_t payload[21]; // Adjust size accordingly
+    // Handle successful network join
+    void joined(const LbmxEvent& event) override {
+        state = StateType::Joined;
+        Serial.println("Successfully joined the LoRaWAN network.");
 
-    // Encode temperature and humidity
-    int16_t tempPayload = static_cast<int16_t>(temperature * 100);
-    int16_t humidPayload = static_cast<int16_t>(humidity * 100);
-
-    payload[0] = (tempPayload >> 8) & 0xFF;
-    payload[1] = tempPayload & 0xFF;
-    payload[2] = (humidPayload >> 8) & 0xFF;
-    payload[3] = humidPayload & 0xFF;
-
-    // Process GPS data
-    if (gps.location.isValid())
-    {
-        // Latitude and longitude as double
-        double latitude = gps.location.lat();
-        double longitude = gps.location.lng();
-
-        // Encode latitude and longitude as int32_t
-        int32_t latPayload = static_cast<int32_t>(latitude * 1e6);
-        int32_t lngPayload = static_cast<int32_t>(longitude * 1e6);
-
-        payload[4] = (latPayload >> 24) & 0xFF;
-        payload[5] = (latPayload >> 16) & 0xFF;
-        payload[6] = (latPayload >> 8) & 0xFF;
-        payload[7] = latPayload & 0xFF;
-
-        payload[8] = (lngPayload >> 24) & 0xFF;
-        payload[9] = (lngPayload >> 16) & 0xFF;
-        payload[10] = (lngPayload >> 8) & 0xFF;
-        payload[11] = lngPayload & 0xFF;
-
-        // Speed in km/h
-        double speed = gps.speed.isValid() ? gps.speed.kmph() : 0.0;
-
-        // Altitude in meters
-        double altitude = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
-
-        // Number of satellites
-        uint8_t satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
-
-        // Encode speed as uint16_t in km/h * 100
-        uint16_t speedPayload = static_cast<uint16_t>(speed * 100);
-
-        payload[12] = (speedPayload >> 8) & 0xFF;
-        payload[13] = speedPayload & 0xFF;
-
-        // Encode altitude as int16_t in meters * 100
-        int16_t altitudePayload = static_cast<int16_t>(altitude * 100);
-
-        payload[14] = (altitudePayload >> 8) & 0xFF;
-        payload[15] = altitudePayload & 0xFF;
-
-        // Encode number of satellites as uint8_t
-        payload[16] = satellites;
-    }
-    else
-    {
-        Serial.println("GPS location is invalid, not sending GPS data.");
-
-        // Set GPS data to indicate invalid values
-        memset(&payload[4], 0xFF, 13);  // Set bytes 4 to 16 to 0xFF
+        // Schedule the first uplink
+        if (LbmxEngine::startAlarm(FIRST_UPLINK_DELAY) != SMTC_MODEM_RC_OK) {
+            Serial.println("Failed to schedule the first uplink.");
+            state = StateType::Failed;
+        }
     }
 
-    // Include the shock counter
-    uint32_t counter = shockCounter; // Read the volatile variable
-    payload[17] = (counter >> 24) & 0xFF;
-    payload[18] = (counter >> 16) & 0xFF;
-    payload[19] = (counter >> 8) & 0xFF;
-    payload[20] = counter & 0xFF;
-
-    // Send the payload via LoRaWAN
-    if (LbmxEngine::requestUplink(UPLINK_FPORT, false, payload, sizeof(payload)) != SMTC_MODEM_RC_OK)
-    {
-        Serial.println("Failed to send uplink.");
-        return;
+    // Handle failed network join
+    void joinFail(const LbmxEvent& event) override {
+        state = StateType::Failed;
+        Serial.println("Failed to join the LoRaWAN network.");
     }
 
-    // Schedule the next uplink
-    if (LbmxEngine::startAlarm(UPLINK_PERIOD) != SMTC_MODEM_RC_OK)
-    {
-        Serial.println("Failed to schedule the next uplink.");
-        return;
-    }
-}
+    // Handle alarm event for scheduled uplinks
+    void alarm(const LbmxEvent& event) override {
+        if (state != StateType::Joined) return;
 
-// Modem Event Handler
-
-static void ModemEventHandler()
-{
-    static LbmxEvent event;
-    static MyLbmxEventHandlers handlers;
-
-    while (event.fetch())
-    {
-        Serial.printf("----- %s -----\n", event.getEventString().c_str());
-
-        handlers.invoke(event);
-    }
-}
-
-// The interrupt callback function
-void int1_callback()
-{
-    Serial.println("LIS3DHTR interrupt");
-
-    uint8_t flag = 0;
-    LIS.getIntStatus(&flag); // Get the interrupt status and clear it
-
-    // 3 axis
-    float x = LIS.getAccelerationX();
-    float y = LIS.getAccelerationY();
-    float z = LIS.getAccelerationZ();
-
-    // Check if the shock exceeds the threshold on any axis
-    if (abs(x) > SHOCK_THRESHOLD || abs(y) > SHOCK_THRESHOLD || abs(z) > SHOCK_THRESHOLD) {
-        Serial.println("WARNING: A big shock was detected!");
-
-        // Increment the shock counter
-        shockCounter++;
-
-        // Read and print temperature and humidity
+        // Read Temperature and Humidity
         float temperature, humidity;
         uint16_t error = sht4x.measureHighPrecision(temperature, humidity);
-        if (error)
-        {
-            Serial.print("Error reading from SHT41 sensor: ");
+        if (error) {
+            Serial.print("SHT41 sensor error: ");
             Serial.println(error);
-        }
-        else
-        {
-            Serial.print("Temperature: ");
-            Serial.print(temperature);
-            Serial.print(" °C\t");
-            Serial.print("Humidity: ");
-            Serial.print(humidity);
-            Serial.println(" %RH");
+            return;
         }
 
-        // Print GPS info
-        displayInfo();
-    } else {
-        // Removed printing of x, y, and z accelerometer data
+        // Read GPS Data
+        float latitude = gps.location.isValid() ? gps.location.lat() : 0.0;
+        float longitude = gps.location.isValid() ? gps.location.lng() : 0.0;
+
+        // Read Accelerometer Data for Shock Detection
+        float x = LIS.getAccelerationX();
+        float y = LIS.getAccelerationY();
+        float z = LIS.getAccelerationZ();
+        if (abs(x) > SHOCK_THRESHOLD || abs(y) > SHOCK_THRESHOLD || abs(z) > SHOCK_THRESHOLD) {
+            shockCounter++;
+            Serial.println("Shock detected! Incrementing counter.");
+        }
+
+        // Get Satellites and Speed
+        uint8_t satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;  // Satellite count
+        int16_t speedPayload = gps.speed.isValid() ? static_cast<int16_t>(gps.speed.kmph() * 100) : 0;  // Speed in km/h
+
+        // Print sensor data locally
+        Serial.println("=====================================");
+        Serial.print("Temperature: ");
+        Serial.print(temperature);
+        Serial.println(" °C");
+
+        Serial.print("Humidity: ");
+        Serial.print(humidity);
+        Serial.println(" %");
+
+        Serial.print("Shock Counter: ");
+        Serial.println(shockCounter);
+
+        if (gps.date.isValid() && gps.time.isValid()) {
+            Serial.print("Date: ");
+            if (gps.date.day() < 10) Serial.print('0');
+            Serial.print(gps.date.day());
+            Serial.print("/");
+            if (gps.date.month() < 10) Serial.print('0');
+            Serial.print(gps.date.month());
+            Serial.print("/");
+            Serial.print(gps.date.year());
+            Serial.print("  Time: ");
+            if (gps.time.hour() < 10) Serial.print('0');
+            Serial.print(gps.time.hour());
+            Serial.print(":");
+            if (gps.time.minute() < 10) Serial.print('0');
+            Serial.print(gps.time.minute());
+            Serial.print(":");
+            if (gps.time.second() < 10) Serial.print('0');
+            Serial.print(gps.time.second());
+            Serial.println(" UTC");
+        } else {
+            Serial.println("Date/Time: INVALID");
+        }
+
+        if (gps.location.isValid()) {
+            Serial.print("Latitude: ");
+            Serial.print(latitude, 6);
+            Serial.println("°");
+
+            Serial.print("Longitude: ");
+            Serial.print(longitude, 6);
+            Serial.println("°");
+        } else {
+            Serial.println("Location: INVALID");
+        }
+
+        Serial.print("Satellites: ");
+        Serial.println(satellites);
+
+        Serial.print("Speed: ");
+        Serial.print(speedPayload / 100.0);
+        Serial.println(" km/h");
+        Serial.println("=====================================");
+
+        // Prepare LoRaWAN Payload
+        uint8_t payload[17]; // 2 bytes temp, 2 bytes humidity, 2 bytes shock, 4 bytes lat, 4 bytes lng, 1 byte satellites, 2 bytes speed
+
+        // Convert sensor readings to appropriate formats
+        int16_t tempPayload = static_cast<int16_t>(temperature * 100); // Temperature in hundredths
+        int16_t humidPayload = static_cast<int16_t>(humidity * 100);    // Humidity in hundredths
+        uint16_t shockPayload = shockCounter;                           // Shock count
+        int32_t lat = static_cast<int32_t>(latitude * 1000000);         // Latitude in microdegrees
+        int32_t lng = static_cast<int32_t>(longitude * 1000000);        // Longitude in microdegrees
+
+        // Assign bytes to payload (Big Endian)
+        payload[0] = (tempPayload >> 8) & 0xFF;
+        payload[1] = tempPayload & 0xFF;
+        payload[2] = (humidPayload >> 8) & 0xFF;
+        payload[3] = humidPayload & 0xFF;
+        payload[4] = (shockPayload >> 8) & 0xFF;
+        payload[5] = shockPayload & 0xFF;
+        payload[6] = (lat >> 24) & 0xFF;
+        payload[7] = (lat >> 16) & 0xFF;
+        payload[8] = (lat >> 8) & 0xFF;
+        payload[9] = lat & 0xFF;
+        payload[10] = (lng >> 24) & 0xFF;
+        payload[11] = (lng >> 16) & 0xFF;
+        payload[12] = (lng >> 8) & 0xFF;
+        payload[13] = lng & 0xFF;
+        payload[14] = satellites;  // Satellite count
+        payload[15] = (speedPayload >> 8) & 0xFF;
+        payload[16] = speedPayload & 0xFF;
+
+        // Send Payload via LoRaWAN
+        if (LbmxEngine::requestUplink(UPLINK_FPORT, false, payload, sizeof(payload)) != SMTC_MODEM_RC_OK) {
+            Serial.println("Failed to send uplink.");
+        } else {
+            Serial.println("Uplink sent successfully.");
+            // Reset shock counter after successful uplink
+            shockCounter = 0;
+        }
+
+        // Schedule the next uplink
+        if (LbmxEngine::startAlarm(UPLINK_PERIOD) != SMTC_MODEM_RC_OK) {
+            Serial.println("Failed to schedule the next uplink.");
+            state = StateType::Failed;
+        }
     }
-}
+};
 
-void setup()
+MyLbmxEventHandlers handlers;  // Instantiate the custom event handler
+
+void setup() 
 {
-    delay(100); // Wait for power on grove
-
-    // Initialize Serial
+    // Initialize Serial Monitor
     Serial.begin(115200);
-    while (!Serial) delay(100); // Wait for it to be ready
+    while (!Serial) delay(100); 
+    Serial.println("Initializing Device...");
 
-    // Initialize the GPS hardware serial port
-    Serial1.begin(9600);  // GPS communicates at 9600 baud
-    delay(1000);          // Delay to initialize
+    // Initialize GPS Serial
+    Serial1.begin(9600);  // GPS operates at 9600 baud
+    Serial.println("GPS Serial Initialized.");
 
-    Serial.println("GPS Hardware Serial initialized...");
+    // Initialize Temperature & Humidity Sensor
+    sht4x.begin(Wire);  // No need to check return value
+    Serial.println("SHT41 Sensor Initialized.");
 
-    Wire.begin();
-    sht4x.begin(Wire);  // Initialize the SHT41 sensor
+    // Initialize Accelerometer
+    LIS.begin(Wire, 0x19);  // No need to check return value
+    Serial.println("LIS3DHTR Accelerometer Initialized.");
 
-    // Initialize the accelerometer
-    LIS.begin(WIRE, 0x19); // I2C address
-    if (!LIS)
-    {
-        Serial.println("LIS3DHTR didn't connect.");
-        while (1);
-    }
-
-    // Configure LIS3DHTR to trigger an interrupt
-    LIS.setInterrupt();
-
-    // Initialize the interrupt pin
-    pinMode(PIN_LIS3DHTR_INT2, INPUT);
-    attachInterrupt(PIN_LIS3DHTR_INT2, int1_callback, ISR_DEFERRED | FALLING);
-
+    // Initialize LoRaWAN Engine
     lbmWm1110.begin();
     LbmxEngine::begin(lbmWm1110.getRadio(), ModemEventHandler);
-
-    LbmxEngine::printVersions(lbmWm1110.getRadio());
+    Serial.println("LoRaWAN Engine Initialized.");
 }
 
-void loop()
+void loop() 
 {
-    // Read data from GPS module
-    while (Serial1.available() > 0)
-    {
-        char c = Serial1.read();  // Read character from GPS
-
-        // Feed the character to TinyGPSPlus for parsing
+    // Continuously read GPS data
+    while (Serial1.available() > 0) {
+        char c = Serial1.read();
         gps.encode(c);
     }
 
-    // Process modem tasks
+    // Process LoRaWAN events
     LbmxEngine::doWork();
 
-    // Read acceleration data and check for shock
-    if (!LIS) // LIS3DHTR is not ready
-    {
-        Serial.println("LIS3DHTR didn't connect.");
-        while (1);
-    }
-
-    float x = LIS.getAccelerationX();
-    float y = LIS.getAccelerationY();
-    float z = LIS.getAccelerationZ();
-
-    // Check if the shock exceeds the threshold on any axis
-    if (abs(x) > SHOCK_THRESHOLD || abs(y) > SHOCK_THRESHOLD || abs(z) > SHOCK_THRESHOLD)
-    {
-        Serial.println("WARNING: A big shock was detected!");
-
-        // Increment the shock counter
-        shockCounter++;
-
-        // Read and print temperature and humidity
-        float temperature, humidity;
-        uint16_t error = sht4x.measureHighPrecision(temperature, humidity);
-        if (error)
-        {
-            Serial.print("Error reading from SHT41 sensor: ");
-            Serial.println(error);
-        }
-        else
-        {
-            Serial.print("Temperature: ");
-            Serial.print(temperature);
-            Serial.print(" °C\t");
-            Serial.print("Humidity: ");
-            Serial.print(humidity);
-            Serial.println(" %RH");
-        }
-
-        // Print GPS info
-        displayInfo();
-    }
-    else
-    {
-        // Removed printing of x, y, and z accelerometer data
-    }
-
-    // FOPR DEBUGGING: Display GPS info and shock counter every 5 seconds
-    if (millis() - lastDisplayTime > 5000)
-    {
-        lastDisplayTime = millis();
-        displayInfo();
-    }
-
-    // Small delay to prevent watchdog resets, adjust as needed
-    delay(500); 
+    // Short delay to prevent watchdog resets
+    delay(EXECUTION_PERIOD);
 }
 
-// FOR DEBUGGING:Function to display GPS info and shock counter
-void displayInfo()
+void ModemEventHandler()
 {
-    Serial.println("=====================================");
-
-    // Print date and time data
-    if (gps.date.isValid() && gps.time.isValid()) {
-        Serial.print("Date: ");
-        if (gps.date.day() < 10) Serial.print('0');
-        Serial.print(gps.date.day());
-        Serial.print("/");
-        if (gps.date.month() < 10) Serial.print('0');
-        Serial.print(gps.date.month());
-        Serial.print("/");
-        Serial.print(gps.date.year());
-
-        Serial.print("  Time: ");
-        if (gps.time.hour() < 10) Serial.print('0');
-        Serial.print(gps.time.hour());
-        Serial.print(":");
-        if (gps.time.minute() < 10) Serial.print('0');
-        Serial.print(gps.time.minute());
-        Serial.print(":");
-        if (gps.time.second() < 10) Serial.print('0');
-        Serial.print(gps.time.second());
-        Serial.println(" UTC");
-    } else {
-        Serial.println("Date/Time: INVALID");
+    static LbmxEvent event;
+    while (event.fetch()) {
+        handlers.invoke(event);  // Use the custom handlers instance
     }
-
-    // Print location data
-    if (gps.location.isValid()) {
-        Serial.print("Latitude: ");
-        Serial.print(gps.location.lat(), 6);
-        Serial.println("°");
-
-        Serial.print("Longitude: ");
-        Serial.print(gps.location.lng(), 6);
-        Serial.println("°");
-    } else {
-        Serial.println("Location: INVALID");
-    }
-
-    // Print altitude if available
-    if (gps.altitude.isValid()) {
-        Serial.print("Altitude: ");
-        Serial.print(gps.altitude.meters());
-        Serial.println(" meters");
-    } else {
-        Serial.println("Altitude: INVALID");
-    }
-
-    // Print speed if available
-    if (gps.speed.isValid()) {
-        Serial.print("Speed: ");
-        Serial.print(gps.speed.kmph());
-        Serial.println(" km/h");
-    } else {
-        Serial.println("Speed: INVALID");
-    }
-
-    // Print number of satellites
-    if (gps.satellites.isValid()) {
-        Serial.print("Satellites: ");
-        Serial.println(gps.satellites.value());
-    } else {
-        Serial.println("Satellites: INVALID");
-    }
-
-    // Print shock counter  
-    Serial.print("Shock Counter: ");
-    Serial.println(shockCounter);
 }

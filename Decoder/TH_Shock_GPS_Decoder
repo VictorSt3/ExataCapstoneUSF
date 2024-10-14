@@ -1,0 +1,26 @@
+function Decoder(b, port) {
+  // Decode temperature, humidity, shock count
+  var temperature = (b[0] << 8 | b[1]) / 100;
+  var humidity = (b[2] << 8 | b[3]) / 100;
+  var shockCount = (b[4] << 8 | b[5]);
+
+  // Latitude and Longitude as signed 32-bit integers
+  var latitude = ((b[6] << 24) | (b[7] << 16) | (b[8] << 8) | b[9]) / 1000000;
+  var longitude = ((b[10] << 24) | (b[11] << 16) | (b[12] << 8) | b[13]) / 1000000;
+
+  // Satellite count (1 byte)
+  var satellites = b[14];
+
+  // Speed in km/h (2 bytes)
+  var speed = (b[15] << 8 | b[16]) / 100;  // Speed in kilometers per hour
+
+  return {
+    temperature: temperature,
+    humidity: humidity,
+    shockCount: shockCount,
+    latitude: latitude,      // Latitude as a separate field
+    longitude: longitude,    // Longitude as a separate field
+    satellites: satellites,
+    speed: speed             // Speed in km/h
+  };
+}

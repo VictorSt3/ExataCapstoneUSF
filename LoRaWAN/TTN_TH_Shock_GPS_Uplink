@@ -1,7 +1,6 @@
 /*
  * TTN Uplink: Temperature, Humidity, GPS Data, and Shock Detection
- * Changes needed: 
-      Longer delay for shocks so it doesn't register 1 shock as multiple
+ * Potential Upgrades: 
       Change UTC to ETC
       GPS script optimizations
 
